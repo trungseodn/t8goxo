@@ -43,7 +43,7 @@ export class ZTTeamFFmpegService {
     /**
      * Keep original image ratio (fit) and fill the rest with a blurred version of the same image
      */
-    const cmd = `ffmpeg -y -i "${imagePath}" -vf "split[original][copy];[copy]scale=${vw}:${vh}:force_original_aspect_ratio=increase,crop=${vw}:${vh},boxblur=20:20[bg];[original]scale=${vw}:${vh}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2" -frames:v 1 "${outputPath}"`;
+    const cmd = `ffmpeg -y -i "${imagePath}" -vf "split[original][copy];[copy]hue=s=0,scale=${vw}:${vh}:force_original_aspect_ratio=increase,crop=${vw}:${vh},boxblur=20:20[bg];[original]hue=s=0,scale=${vw}:${vh}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2" -frames:v 1 "${outputPath}"`;
 
     try {
       await this.ztteam_runFfmpeg(cmd, 30000);
@@ -76,12 +76,12 @@ export class ZTTeamFFmpegService {
     const fgBasePath = path.join(workDir, `motion_fg_${Date.now()}.jpg`);
 
     try {
-      /** Step 1: Pre-generate static blurred 9:16 background once (ultra-fast ~0.2s) */
-      const bgCmd = `ffmpeg -y -i "${imagePath}" -vf "scale=${vw}:${vh}:force_original_aspect_ratio=increase,crop=${vw}:${vh},boxblur=25:10" -frames:v 1 "${bgPath}"`;
+      /** Step 1: Pre-generate static blurred 9:16 background once (ultra-fast ~0.2s) with black and white effect */
+      const bgCmd = `ffmpeg -y -i "${imagePath}" -vf "hue=s=0,scale=${vw}:${vh}:force_original_aspect_ratio=increase,crop=${vw}:${vh},boxblur=25:10" -frames:v 1 "${bgPath}"`;
       await this.ztteam_runFfmpeg(bgCmd, 20000);
 
-      /** Step 2: Pre-scale foreground base once to 1200x1200 */
-      const fgCmd = `ffmpeg -y -i "${imagePath}" -vf "scale=${vw}:${vw}:force_original_aspect_ratio=decrease" -frames:v 1 "${fgBasePath}"`;
+      /** Step 2: Pre-scale foreground base once to 1200x1200 with black and white effect */
+      const fgCmd = `ffmpeg -y -i "${imagePath}" -vf "hue=s=0,scale=${vw}:${vw}:force_original_aspect_ratio=decrease" -frames:v 1 "${fgBasePath}"`;
       await this.ztteam_runFfmpeg(fgCmd, 20000);
 
       /** Step 3: Render smooth bicubic zoom (eval=frame calculates sub-pixel bicubic on each frame with 0 jitter) */
@@ -144,8 +144,8 @@ export class ZTTeamFFmpegService {
     for (let i = 0; i < actualN; i++) {
       const imgPath = images[i % images.length];
       inputs += `-loop 1 -t ${imageDur} -i "${imgPath}" `;
-      /** Just ensure it's in yuv420p format (no zoompan to avoid jitter) */
-      filterComplex += `[${i}:v]format=yuv420p[v${i}];`;
+      /** Convert image to black and white and ensure yuv420p format */
+      filterComplex += `[${i}:v]hue=s=0,format=yuv420p[v${i}];`;
     }
 
     if (actualN === 1) {

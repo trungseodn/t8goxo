@@ -503,14 +503,14 @@ JSON SCHEMA:
       };
     }
 
-    /** 3. Pre-generate static blurred 9:16 background once (fast ~0.2s) */
+    /** 3. Pre-generate static blurred 9:16 background once (fast ~0.2s) with black and white effect */
     const bgPath = path.join(workDir, 'static_bg.jpg');
-    const bgCmd = `ffmpeg -y -i "${localImgPath}" -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:10" -frames:v 1 "${bgPath}"`;
+    const bgCmd = `ffmpeg -y -i "${localImgPath}" -vf "hue=s=0,scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=25:10" -frames:v 1 "${bgPath}"`;
     await (this.ffmpegService as any).ztteam_runFfmpeg(bgCmd, 20000);
 
-    /** 4. Pre-scale foreground base once to 1200x1200 */
+    /** 4. Pre-scale foreground base once to 1200x1200 with black and white effect */
     const fgBasePath = path.join(workDir, 'static_fg.jpg');
-    const fgCmd = `ffmpeg -y -i "${localImgPath}" -vf "scale=1200:1200:force_original_aspect_ratio=decrease" -frames:v 1 "${fgBasePath}"`;
+    const fgCmd = `ffmpeg -y -i "${localImgPath}" -vf "hue=s=0,scale=1200:1200:force_original_aspect_ratio=decrease" -frames:v 1 "${fgBasePath}"`;
     await (this.ffmpegService as any).ztteam_runFfmpeg(fgCmd, 20000);
 
     /** 5. Prepare BGM Audio with Fade-Out */
