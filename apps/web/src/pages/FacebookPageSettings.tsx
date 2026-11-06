@@ -46,6 +46,8 @@ export default function FacebookPageSettings() {
   const [bgmAudio, setBgmAudio] = useState<HTMLAudioElement | null>(null);
   const [isUploadingBgm, setIsUploadingBgm] = useState(false);
   const [autoPublishEnabled, setAutoPublishEnabled] = useState(true);
+  const [pageDescription, setPageDescription] = useState<string>('');
+  const [isUpdatingFbDescription, setIsUpdatingFbDescription] = useState<boolean>(false);
   const [addLinkToCaption, setAddLinkToCaption] = useState(false);
   const [addLinkToComment, setAddLinkToComment] = useState(false);
   const [linkMode, setLinkMode] = useState<'instant' | 'view_threshold' | 'disabled'>('instant');
@@ -254,6 +256,7 @@ export default function FacebookPageSettings() {
       setPageAvatar(data.avatar || null);
       setIsCheckpointBlocked(Boolean(data.isCheckpointBlocked));
       setTags(data.tags || []);
+      setPageDescription(data.description || '');
       setPostFormat(data.post_format || 'image');
       setVideoEngine(data.video_engine || 'hook_image');
       setDefaultBgm(data.default_bgm || '');
@@ -374,6 +377,7 @@ export default function FacebookPageSettings() {
       setIsSaving(true);
       await api.put(`facebook/pages/${id}/settings`, {
         tags,
+        description: pageDescription,
         post_format: postFormat,
         video_engine: videoEngine,
         default_bgm: defaultBgm || null,
@@ -415,6 +419,26 @@ export default function FacebookPageSettings() {
       ztteam_showToast(err.response?.data?.message || 'Lỗi khi mở checkpoint', 'error');
     } finally {
       setIsClearingCheckpoint(false);
+    }
+  };
+
+  /** Cập nhật mô tả trực tiếp lên Meta Facebook Graph API */
+  const ztteam_handleSyncDescriptionToFacebook = async () => {
+    if (!id) return;
+    try {
+      setIsUpdatingFbDescription(true);
+      const res = await api.post('/facebook/pages/bulk-update-description', {
+        pageIds: [id],
+        description: pageDescription,
+        updateFacebook: true,
+      });
+      if (res.data?.success) {
+        ztteam_showToast(res.data.message || 'Đã cập nhật mô tả lên Facebook thành công!', 'success');
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || err.message || 'Lỗi khi cập nhật mô tả lên Facebook', 'error');
+    } finally {
+      setIsUpdatingFbDescription(false);
     }
   };
 
@@ -1205,6 +1229,52 @@ export default function FacebookPageSettings() {
                   )}
                 </div>
               </div>
+
+              {/** Mô Tả & Tiểu Sử Fanpage (Bio / About) */}
+              <div className="pt-4 border-t border-fb-surface-hover/50 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-fb-text uppercase tracking-wide flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-[18px] text-teal-400">description</span>
+                    Mô Tả & Tiểu Sử Fanpage (Bio / About)
+                  </label>
+                  <span className="text-[11px] text-fb-text-muted">
+                    {pageDescription.length} ký tự
+                  </span>
+                </div>
+
+                <textarea
+                  value={pageDescription}
+                  onChange={(e) => setPageDescription(e.target.value)}
+                  rows={3}
+                  placeholder="Nhập mô tả / tiểu sử giới thiệu cho Fanpage..."
+                  className="w-full bg-slate-900/80 border border-slate-700/80 rounded-xl p-3 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-teal-500 leading-relaxed font-sans resize-y"
+                />
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                  <p className="text-[11px] text-fb-text-muted leading-tight">
+                    Lưu nội bộ khi bấm "Lưu Thay Đổi", hoặc bấm nút bên phải để cập nhật trực tiếp lên Meta Facebook Graph API.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={ztteam_handleSyncDescriptionToFacebook}
+                    disabled={isUpdatingFbDescription}
+                    className="px-3.5 py-1.5 rounded-xl bg-teal-500/15 hover:bg-teal-500/25 text-teal-400 border border-teal-500/30 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm shrink-0 disabled:opacity-50 active:scale-95"
+                    title="Đồng bộ mô tả này trực tiếp lên Facebook Graph API ngay lập tức"
+                  >
+                    {isUpdatingFbDescription ? (
+                      <>
+                        <span className="material-symbols-outlined animate-spin text-sm">sync</span>
+                        <span>Đang Cập Nhật...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-sm">cloud_upload</span>
+                        <span>Cập Nhật Lên Facebook</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
             </div>
 
             {/** Card 2: Nguồn Website WordPress Liên Kết */}
@@ -1935,6 +2005,11 @@ export default function FacebookPageSettings() {
                           <span>Hạng mục:</span>
                           <span className="text-cyan-400 font-semibold">{tags.length > 0 ? tags.join(', ') : 'Trang Facebook'}</span>
                         </div>
+                        {pageDescription && (
+                          <p className="mt-1.5 text-xs text-slate-300 italic max-w-md line-clamp-2 text-center sm:text-left">
+                            "{pageDescription}"
+                          </p>
+                        )}
                       </div>
                     </div>
 

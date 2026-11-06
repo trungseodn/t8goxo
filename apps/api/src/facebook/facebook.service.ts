@@ -697,6 +697,7 @@ export class ZTTeamFacebookService {
         internalId: p.id,
         name: p.name,
         category: p.category,
+        description: (p as any).description || null,
         followersCount: p.follower_count,
         avatar: (p as any).branding_avatar_url || p.avatar,
         accountType: p.fb_account.business_id ? (p.fb_account.account_type || 'SYSTEM_USER') : 'PERSONAL',
@@ -804,6 +805,7 @@ export class ZTTeamFacebookService {
       isCheckpointBlocked,
       tags: page.tags,
       cover_url: (page as any).cover_url || null,
+      description: (page as any).description || null,
       branding: {
         avatarUrl: (page as any).branding_avatar_url || page.avatar || null,
         avatarPrompt: (page as any).branding_avatar_prompt || null,
@@ -898,7 +900,31 @@ export class ZTTeamFacebookService {
       ai_caption_length: config.ai_caption_length,
       ai_custom_prompt: config.ai_custom_prompt,
       voice_speed: config.voice_speed,
+      description: config.description !== undefined ? config.description : undefined,
     };
+
+    /** ZTTeam: Nếu có yêu cầu đồng bộ mô tả lên Facebook Graph API */
+    if (config.syncDescriptionToFacebook && config.description !== undefined && page.page_token_encrypted) {
+      const pageDesc = String(config.description || '').trim();
+      const shortAbout = pageDesc.length > 255 ? pageDesc.substring(0, 250) + '...' : pageDesc;
+      try {
+        await firstValueFrom(
+          this.httpService.post(
+            `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+            null,
+            {
+              params: {
+                about: shortAbout,
+                description: pageDesc,
+                access_token: page.page_token_encrypted,
+              },
+            }
+          )
+        );
+      } catch (e: any) {
+        this.logger.warn(`Failed to sync description to FB for page ${page.id}: ${e?.message}`);
+      }
+    }
 
     /** ZTTeam: Nếu người dùng bật lại tự động đăng, khôi phục token_status về active để xóa cảnh báo */
     if (config.auto_publish_enabled === true && page.token_status === 'checkpoint_required') {
@@ -3001,6 +3027,191 @@ export class ZTTeamFacebookService {
       categoryId,
       categoryName,
       results,
+    };
+  }
+
+  /**
+   * ZTTeam: Cập nhật Mô Tả / Tiểu Sử (Bio / About / Description) hàng loạt hoặc từng Fanpage qua Facebook Graph API
+   */
+  async ztteam_bulkUpdateDescription(
+    userId: string,
+    dto: {
+      pageIds?: string[];
+      scope?: 'selected' | 'bm' | 'all';
+      bmName?: string;
+      description: string;
+      updateFacebook?: boolean;
+    }
+  ) {
+    const { pageIds, scope = 'selected', bmName, description, updateFacebook = true } = dto;
+
+    if (description === undefined || description === null) {
+      throw new BadRequestException('Nội dung mô tả không hợp lệ');
+    }
+
+    let targetPages: any[] = [];
+
+    if (scope === 'all') {
+      targetPages = await this.prisma.ztteam_pages.findMany({
+        where: {
+          fb_account: { owner_user_id: userId },
+        },
+        include: { fb_account: true },
+      });
+    } else if (scope === 'bm' && bmName) {
+      targetPages = await this.prisma.ztteam_pages.findMany({
+        where: {
+          fb_account: {
+            owner_user_id: userId,
+            business_name: bmName,
+          },
+        },
+        include: { fb_account: true },
+      });
+    } else {
+      if (!pageIds || !Array.isArray(pageIds) || pageIds.length === 0) {
+        throw new BadRequestException('Danh sách Fanpage không được rỗng');
+      }
+      targetPages = await this.prisma.ztteam_pages.findMany({
+        where: {
+          OR: [
+            { id: { in: pageIds } },
+            { fb_page_id: { in: pageIds } },
+          ],
+          fb_account: { owner_user_id: userId },
+        },
+        include: { fb_account: true },
+      });
+    }
+
+    if (targetPages.length === 0) {
+      throw new BadRequestException('Không tìm thấy Fanpage nào thỏa mãn điều kiện');
+    }
+
+    this.logger.log(`[Bulk Description] Bắt đầu cập nhật mô tả cho ${targetPages.length} Fanpage (updateFacebook=${updateFacebook})...`);
+
+    const results: any[] = [];
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < targetPages.length; i++) {
+      const page = targetPages[i];
+
+      // Thay thế biến mẫu động {PAGE_NAME}, {CATEGORY}
+      const pageDesc = description
+        .replace(/\{PAGE_NAME\}/gi, page.name || '')
+        .replace(/\{CATEGORY\}/gi, page.category || 'Trang')
+        .trim();
+
+      let fbError: string | null = null;
+
+      if (updateFacebook) {
+        if (!page.page_token_encrypted) {
+          failCount++;
+          results.push({
+            pageId: page.id,
+            fbPageId: page.fb_page_id,
+            name: page.name,
+            success: false,
+            error: 'Fanpage chưa có Token hoặc Token đã hết hạn',
+          });
+          continue;
+        }
+
+        const shortAbout = pageDesc.length > 255 ? pageDesc.substring(0, 250) + '...' : pageDesc;
+
+        try {
+          await firstValueFrom(
+            this.httpService.post(
+              `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+              null,
+              {
+                params: {
+                  about: shortAbout,
+                  description: pageDesc,
+                  access_token: page.page_token_encrypted,
+                },
+              }
+            )
+          );
+        } catch (firstErr: any) {
+          try {
+            await firstValueFrom(
+              this.httpService.post(
+                `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+                null,
+                {
+                  params: {
+                    description: pageDesc,
+                    access_token: page.page_token_encrypted,
+                  },
+                }
+              )
+            );
+          } catch (secondErr: any) {
+            try {
+              await firstValueFrom(
+                this.httpService.post(
+                  `https://graph.facebook.com/${this.API_VERSION}/${page.fb_page_id}`,
+                  null,
+                  {
+                    params: {
+                      about: shortAbout,
+                      access_token: page.page_token_encrypted,
+                    },
+                  }
+                )
+              );
+            } catch (thirdErr: any) {
+              fbError =
+                thirdErr.response?.data?.error?.message ||
+                secondErr.response?.data?.error?.message ||
+                firstErr.response?.data?.error?.message ||
+                'Không thể cập nhật mô tả lên Facebook API';
+            }
+          }
+        }
+      }
+
+      if (fbError) {
+        failCount++;
+        this.logger.error(`[Bulk Description] [${i + 1}/${targetPages.length}] Lỗi cập nhật mô tả cho Page "${page.name}": ${fbError}`);
+        results.push({
+          pageId: page.id,
+          fbPageId: page.fb_page_id,
+          name: page.name,
+          success: false,
+          error: fbError,
+        });
+      } else {
+        await this.prisma.ztteam_pages.update({
+          where: { id: page.id },
+          data: { description: pageDesc } as any,
+        });
+
+        successCount++;
+        results.push({
+          pageId: page.id,
+          fbPageId: page.fb_page_id,
+          name: page.name,
+          success: true,
+          description: pageDesc,
+        });
+        this.logger.log(`[Bulk Description] [${i + 1}/${targetPages.length}] Cập nhật mô tả thành công cho Page "${page.name}"`);
+      }
+
+      if (i < targetPages.length - 1) {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+
+    return {
+      success: true,
+      totalRequested: targetPages.length,
+      successCount,
+      failCount,
+      results,
+      message: `Đã cập nhật mô tả cho ${successCount}/${targetPages.length} Fanpage`,
     };
   }
 

@@ -6,6 +6,7 @@ export interface ZTTeamFanpage {
   name: string;
   accessToken: string;
   category?: string;
+  description?: string | null;
   followersCount?: number;
   avatar?: string;
   ownerName?: string;

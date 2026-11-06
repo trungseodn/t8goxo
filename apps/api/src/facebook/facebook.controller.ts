@@ -259,6 +259,21 @@ export class ZTTeamFacebookController {
     return this.facebookService.ztteam_bulkUpdateCategory(body);
   }
 
+  @Post('pages/bulk-update-description')
+  ztteam_bulkUpdateDescription(
+    @Request() req: any,
+    @Body()
+    body: {
+      pageIds?: string[];
+      scope?: 'selected' | 'bm' | 'all';
+      bmName?: string;
+      description: string;
+      updateFacebook?: boolean;
+    }
+  ) {
+    return this.facebookService.ztteam_bulkUpdateDescription(req.user.sub, body);
+  }
+
   @Post('pages/:pageId/branding/upload')
   @UseInterceptors(
     FileInterceptor('file', {

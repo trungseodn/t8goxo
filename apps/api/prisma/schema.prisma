@@ -65,6 +65,7 @@ model ztteam_pages {
   name                      String
   avatar                    String?
   category                  String?
+  description               String?  @db.Text
   follower_count            Int      @default(0)
   page_token_encrypted      String
   fb_account_id             String
