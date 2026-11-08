@@ -718,7 +718,16 @@ export class ZTTeamHookVideoService {
 
         browser = await puppeteer.launch({
           headless: true,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-breakpad',
+            '--disable-software-rasterizer',
+            '--disable-background-networking',
+          ],
         });
         const page = await browser.newPage();
         await page.setViewport({ width: 1080, height: 1920, deviceScaleFactor: 1 });
@@ -1010,7 +1019,16 @@ export class ZTTeamHookVideoService {
 
       browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-breakpad',
+          '--disable-software-rasterizer',
+          '--disable-background-networking',
+        ],
       });
       const page = await browser.newPage();
       await page.setViewport({ width: 1080, height: 1920, deviceScaleFactor: 1 });
