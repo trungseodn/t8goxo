@@ -1420,7 +1420,7 @@ CRITICAL REQUIREMENTS:
 TASK: Rewrite ${isFirst ? 'the TITLE and ' : ''}the ${chunk.length} numbered paragraphs below${chunks.length > 1 ? ` (part ${ci + 1} of ${chunks.length} of one article)` : ''}.
 
 RULES
-- Write in the SAME LANGUAGE as the original. Never translate.
+- Write in the EXACT SAME LANGUAGE as the original text (usually English). If the original text is in English, the rewritten text MUST be in English. Never translate.
 - Keep the same voice, tone, point of view and tense.
 - Keep the same opening style, the same way the story is led and unfolded, and the same pacing and suspense that keeps readers reading. Preserve hooks, cliffhangers and transitions.
 - Keep the SAME LENGTH: each rewritten paragraph must be about as long as its original (within ±10% words). Total original length of this part: ~${chunkWords} words.

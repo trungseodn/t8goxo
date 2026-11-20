@@ -344,6 +344,8 @@ export default function AIFactory() {
     { key: 'QUEUED', label: 'Đang chờ', icon: 'hourglass_empty', count: counts.queued },
     { key: 'RENDERING', label: 'Đang vẽ AI', icon: 'auto_awesome', count: counts.rendering },
     { key: 'COMPLETED', label: 'Sẵn sàng đăng', icon: 'schedule', count: counts.completed },
+    { key: 'REWRITTEN', label: 'Đã viết lại AI', icon: 'auto_awesome', count: (counts as any).rewritten || 0 },
+    { key: 'PENDING_REWRITE', label: 'Chờ viết lại AI', icon: 'history_edu', count: (counts as any).pendingRewrite || 0 },
     { key: 'POSTED', label: 'Đã xuất bản', icon: 'check_circle', count: counts.posted },
     { key: 'FAILED', label: 'Lỗi Đăng Fanpage', icon: 'sync_problem', count: counts.failed },
     { key: 'VIDEO_FAILED', label: 'Lỗi Video (Chưa đăng)', icon: 'videocam_off', count: counts.videoFailed || 0 },

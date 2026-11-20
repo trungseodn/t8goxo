@@ -41,6 +41,27 @@ export default function ZTTeamAIPostCard({
   onMarkPosted,
 }: ZTTeamAIPostCardProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isRewriting, setIsRewriting] = useState(false);
+
+  const ztteam_handleRewriteArticle = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isRewriting || item.ai_script === 'AI_REWRITTEN') return;
+    try {
+      setIsRewriting(true);
+      ztteam_showToast('Đang gọi AI DeepSeek viết lại bài viết...', 'info');
+      const res = await api.post(`/wordpress/rewrite-single-image/${item.id}`);
+      if (res.data?.success) {
+        ztteam_showToast(`Đã viết lại bài: "${(res.data.newTitle || '').slice(0, 45)}..."`, 'success');
+        if (onMarkPosted) onMarkPosted();
+      } else {
+        ztteam_showToast(res.data?.message || 'Không thể viết lại bài', 'error');
+      }
+    } catch (err: any) {
+      ztteam_showToast(err.response?.data?.message || 'Lỗi khi viết lại bài', 'error');
+    } finally {
+      setIsRewriting(false);
+    }
+  };
   const [showVideo, setShowVideo] = useState(false);
   const [isMarkingPosted, setIsMarkingPosted] = useState(false);
   const [captionText, setCaptionText] = useState(item.ai_caption || '');
@@ -249,7 +270,20 @@ export default function ZTTeamAIPostCard({
             </div>
           </div>
         </div>
-        <div>{ztteam_renderStatusBadge()}</div>
+        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+          {item.ai_script === 'AI_REWRITTEN' ? (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shadow-sm" title="Bài viết đã được AI viết lại toàn bộ">
+              <span className="material-symbols-outlined text-[13px]">auto_awesome</span>
+              Đã viết lại AI
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/25 flex items-center gap-1 shadow-sm" title="Chờ tiến trình nền viết lại hoặc tự động viết trước khi đăng">
+              <span className="material-symbols-outlined text-[13px]">hourglass_empty</span>
+              Chờ viết lại
+            </span>
+          )}
+          {ztteam_renderStatusBadge()}
+        </div>
       </div>
 
       {/** 2.1. Timeline Info Bar (Thời gian POST, IMG, Video) */}
@@ -535,6 +569,25 @@ export default function ZTTeamAIPostCard({
               </span>
               <span>{isRegeneratingColdCase ? 'Đang viết...' : 'AI Cold Case'}</span>
             </button>
+
+            {!isAlreadyPosted && (
+              <button
+                type="button"
+                onClick={ztteam_handleRewriteArticle}
+                disabled={isRewriting || item.ai_script === 'AI_REWRITTEN'}
+                className={`text-[11px] font-bold flex items-center gap-1 px-2 py-0.5 rounded-md transition-colors border ${
+                  item.ai_script === 'AI_REWRITTEN'
+                    ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/25 cursor-default'
+                    : 'text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/25 cursor-pointer'
+                }`}
+                title={item.ai_script === 'AI_REWRITTEN' ? 'Bài viết đã được AI viết lại toàn bộ' : 'Bấm để AI viết lại bài viết WordPress này ngay lập tức'}
+              >
+                <span className={`material-symbols-outlined text-[13px] ${isRewriting ? 'animate-spin' : ''}`}>
+                  {isRewriting ? 'sync' : item.ai_script === 'AI_REWRITTEN' ? 'check' : 'auto_awesome'}
+                </span>
+                <span>{isRewriting ? 'Đang viết...' : item.ai_script === 'AI_REWRITTEN' ? 'Đã viết lại AI' : 'Viết lại AI'}</span>
+              </button>
+            )}
           </div>
 
           {item.wp_post_url && (

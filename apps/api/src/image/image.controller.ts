@@ -246,6 +246,15 @@ export class ZTTeamImageController {
         where.is_posted = false;
       } else if (s === 'FAILED') {
         where.status = 'FAILED';
+      } else if (s === 'REWRITTEN') {
+        where.ai_script = 'AI_REWRITTEN';
+        where.is_posted = false;
+      } else if (s === 'PENDING_REWRITE') {
+        where.is_posted = false;
+        where.OR = [
+          { ai_script: null },
+          { ai_script: { not: 'AI_REWRITTEN' } }
+        ];
       }
     }
 
@@ -276,6 +285,8 @@ export class ZTTeamImageController {
       countVideoFailed,
       countVideoFailedPosted,
       countManual,
+      countRewritten,
+      countPendingRewrite,
     ] = await Promise.all([
       this.prisma.ztteam_images.findMany({
         where,
@@ -309,6 +320,12 @@ export class ZTTeamImageController {
       }),
       this.prisma.ztteam_images.count({
         where: { page_id: null },
+      }),
+      this.prisma.ztteam_images.count({
+        where: { ...baseWhere, is_posted: false, ai_script: 'AI_REWRITTEN' },
+      }),
+      this.prisma.ztteam_images.count({
+        where: { ...baseWhere, is_posted: false, OR: [{ ai_script: null }, { ai_script: { not: 'AI_REWRITTEN' } }] },
       }),
     ]);
 
@@ -445,6 +462,8 @@ export class ZTTeamImageController {
         videoFailed: countVideoFailed,
         videoFailedPosted: countVideoFailedPosted,
         manual: countManual,
+        rewritten: countRewritten,
+        pendingRewrite: countPendingRewrite,
       },
     };
   }
