@@ -1350,4 +1350,155 @@ CRITICAL REQUIREMENTS:
       localPath,
     };
   }
+  /**
+   * ZTTeam: AI (DeepSeek) viết lại TOÀN BỘ bài viết cào về (tiêu đề + từng đoạn).
+   * - Giữ nguyên ngôn ngữ, giọng văn, độ dài, cách mở đầu, dẫn dắt và nhịp giữ chân người đọc.
+   * - Trả về đúng số đoạn như bản gốc để ảnh trong bài giữ nguyên vị trí.
+   * - Bài dài được chia thành nhiều phần (chunk) để không bị cắt cụt do giới hạn token.
+   * - Trả về null nếu không có DeepSeek key, AI lỗi hoặc bản viết lại không đạt chuẩn
+   *   => Pipeline sẽ tự động dùng nội dung gốc (không làm gián đoạn hệ thống).
+   */
+  async ztteam_rewriteFullArticle(
+    title: string,
+    segments: string[],
+    options?: { budgetMs?: number },
+  ): Promise<{ title: string; segments: string[] } | null> {
+    /** Tổng thời gian tối đa cho toàn bộ quá trình viết lại (mặc định 3 phút) */
+    const deadline = Date.now() + (options?.budgetMs ?? 3 * 60 * 1000);
+    const countWords = (t: string) => (t || '').trim().split(/\s+/).filter(Boolean).length;
+    const cleanSegments = (segments || []).map(s => (s || '').replace(/\s+/g, ' ').trim());
+    if (cleanSegments.length === 0 || cleanSegments.some(s => !s)) {
+      this.logger.warn('[AI Rewrite] Danh sách đoạn văn rỗng hoặc không hợp lệ, bỏ qua viết lại.');
+      return null;
+    }
+
+    const settings = await this.getSettings();
+    const apiKey = (settings.deepseekKey || '').trim();
+    if (!apiKey) {
+      this.logger.warn('[AI Rewrite] Chưa cấu hình DeepSeek API Key, dùng nội dung gốc.');
+      return null;
+    }
+
+    const OpenAIClient = require('openai').default || require('openai') || OpenAI;
+    const client = new OpenAIClient({
+      apiKey,
+      baseURL: 'https://api.deepseek.com',
+      timeout: 120 * 1000,
+      maxRetries: 0, /** Tự quản lý số lần thử bên dưới */
+    });
+
+    /** Chia chunk theo số từ (~1200 từ/chunk) để đầu ra không vượt 8K token của deepseek-chat */
+    const MAX_WORDS_PER_CHUNK = 1200;
+    const chunks: string[][] = [];
+    let current: string[] = [];
+    let currentWords = 0;
+    for (const seg of cleanSegments) {
+      const w = countWords(seg);
+      if (current.length > 0 && currentWords + w > MAX_WORDS_PER_CHUNK) {
+        chunks.push(current);
+        current = [];
+        currentWords = 0;
+      }
+      current.push(seg);
+      currentWords += w;
+    }
+    if (current.length > 0) chunks.push(current);
+
+    const cleanTitle = (title || '').replace(/<[^>]*>?/gm, '').trim();
+    let newTitle = cleanTitle;
+    const output: string[] = [];
+
+    for (let ci = 0; ci < chunks.length; ci++) {
+      const chunk = chunks[ci];
+      const isFirst = ci === 0;
+      const prevContext = output.slice(-2).join('\n\n');
+      const chunkWords = chunk.reduce((a, s) => a + countWords(s), 0);
+
+      const numbered = chunk.map((s, i) => `[${i + 1}] ${s}`).join('\n\n');
+      const prompt = `You are a senior editor who rewrites articles so they read as fresh, original writing while feeling exactly like the original.
+
+TASK: Rewrite ${isFirst ? 'the TITLE and ' : ''}the ${chunk.length} numbered paragraphs below${chunks.length > 1 ? ` (part ${ci + 1} of ${chunks.length} of one article)` : ''}.
+
+RULES
+- Write in the SAME LANGUAGE as the original. Never translate.
+- Keep the same voice, tone, point of view and tense.
+- Keep the same opening style, the same way the story is led and unfolded, and the same pacing and suspense that keeps readers reading. Preserve hooks, cliffhangers and transitions.
+- Keep the SAME LENGTH: each rewritten paragraph must be about as long as its original (within ±10% words). Total original length of this part: ~${chunkWords} words.
+- Return EXACTLY ${chunk.length} paragraphs, in the same order, one rewritten paragraph per original paragraph. Never merge, split, add or drop paragraphs.
+- Keep every fact, name, number, date and place unchanged. Do NOT invent details, dialogue, people, motives or events.
+- Use new wording and sentence structures; do not copy sentences verbatim.
+- Plain text only inside paragraphs (no HTML, no markdown, no paragraph numbers).${isFirst ? `
+- TITLE: rewrite it in the same language, keep it a compelling hook of similar length and meaning, without clickbait lies.` : ''}
+${prevContext ? `\nPREVIOUS REWRITTEN PARAGRAPHS (context only, do NOT return them):\n"""\n${prevContext}\n"""\n` : ''}${isFirst ? `\nORIGINAL TITLE: ${cleanTitle}\n` : ''}
+ORIGINAL PARAGRAPHS:
+"""
+${numbered}
+"""
+
+Return STRICTLY one valid JSON object, no extra text:
+{${isFirst ? '"title": "rewritten title", ' : ''}"paragraphs": ["paragraph 1", "paragraph 2"]}`;
+
+      let accepted: string[] | null = null;
+      for (let attempt = 1; attempt <= 2 && !accepted; attempt++) {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs < 20 * 1000) {
+          this.logger.warn(`[AI Rewrite] Hết thời gian cho phép, dừng viết lại ở chunk ${ci + 1}/${chunks.length}.`);
+          return null;
+        }
+        try {
+          const estTokens = Math.min(8000, Math.max(1500, Math.round(chunkWords * 3) + 500));
+          const response = await client.chat.completions.create({
+            model: 'deepseek-chat',
+            response_format: { type: 'json_object' },
+            messages: [{ role: 'user', content: prompt }],
+            max_tokens: estTokens,
+            temperature: 0.8,
+          }, { timeout: Math.min(120 * 1000, remainingMs) });
+          if (response.choices[0]?.finish_reason === 'length') {
+            this.logger.warn(`[AI Rewrite] Chunk ${ci + 1}/${chunks.length} bị cắt do giới hạn token (lần ${attempt}).`);
+            continue;
+          }
+          const json = this.ztteam_safeParseJson(response.choices[0]?.message?.content || '{}');
+          const paras: string[] = Array.isArray(json?.paragraphs)
+            ? json.paragraphs.map((p: any) => String(p ?? '').replace(/<[^>]*>?/gm, '').replace(/^\s*\[\d+\]\s*/, '').trim())
+            : [];
+
+          if (paras.length !== chunk.length || paras.some(p => !p)) {
+            this.logger.warn(`[AI Rewrite] Chunk ${ci + 1}: sai số đoạn (${paras.length}/${chunk.length}) (lần ${attempt}).`);
+            continue;
+          }
+          const ratio = paras.reduce((a, p) => a + countWords(p), 0) / Math.max(1, chunkWords);
+          if (ratio < 0.8 || ratio > 1.2) {
+            this.logger.warn(`[AI Rewrite] Chunk ${ci + 1}: độ dài lệch ${(ratio * 100).toFixed(0)}% (lần ${attempt}).`);
+            continue;
+          }
+          if (isFirst && typeof json?.title === 'string') {
+            const t = json.title.replace(/<[^>]*>?/gm, '').replace(/^["'“”]+|["'“”]+$/g, '').trim();
+            if (t.length >= 10 && t.length <= Math.max(200, cleanTitle.length * 2)) newTitle = t;
+          }
+          accepted = paras;
+        } catch (err: any) {
+          this.logger.warn(`[AI Rewrite] Chunk ${ci + 1}/${chunks.length} lỗi DeepSeek (lần ${attempt}): ${err.message}`);
+        }
+      }
+
+      if (!accepted) {
+        this.logger.warn(`[AI Rewrite] Không viết lại được chunk ${ci + 1}/${chunks.length}, dùng nội dung gốc cho toàn bài.`);
+        return null;
+      }
+      output.push(...accepted);
+    }
+
+    /** Kiểm định tổng thể: độ dài toàn bài phải nằm trong 85% - 115% bản gốc */
+    const originalWords = cleanSegments.reduce((a, s) => a + countWords(s), 0);
+    const newWords = output.reduce((a, s) => a + countWords(s), 0);
+    const totalRatio = newWords / Math.max(1, originalWords);
+    if (output.length !== cleanSegments.length || totalRatio < 0.85 || totalRatio > 1.15) {
+      this.logger.warn(`[AI Rewrite] Bản viết lại không đạt chuẩn (đoạn ${output.length}/${cleanSegments.length}, độ dài ${(totalRatio * 100).toFixed(0)}%), dùng nội dung gốc.`);
+      return null;
+    }
+
+    this.logger.log(`[AI Rewrite] Viết lại thành công ${output.length} đoạn, ${newWords}/${originalWords} từ (${(totalRatio * 100).toFixed(0)}%) qua ${chunks.length} lần gọi DeepSeek.`);
+    return { title: newTitle, segments: output };
+  }
 }

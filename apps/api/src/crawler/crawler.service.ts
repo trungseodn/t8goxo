@@ -9,6 +9,8 @@ import { ZTTeamHookVideoService } from '../media/hook-video.service';
 import { ztteam_getImagesPath, ztteam_getStorageRoot } from '../common/ztteam_storage.util';
 import { ztteam_getNewsComment, ZTTEAM_NEWS_CAPTION_CTA } from '../common/ztteam_news_comment.util';
 import { ZTTeamAIService } from '../ai/ai.service';
+import { TelegramService } from '../telegram/telegram.service';
+import { ztteam_buildHtmlRewritePlan, ztteam_buildPlainRewritePlan, ztteam_buildPlainWithImagesPlan, ZTTeamRewritePlan } from './article-rewrite.util';
 
 @Injectable()
 export class ZTTeamCrawlerService {
@@ -22,6 +24,7 @@ export class ZTTeamCrawlerService {
     @Inject(forwardRef(() => ZTTeamStoryTestService))
     private readonly storyTestService: ZTTeamStoryTestService,
     private readonly aiService: ZTTeamAIService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   /**
@@ -44,6 +47,7 @@ export class ZTTeamCrawlerService {
     existingImageUrl?: string;
     forceRecreate?: boolean;
     keepContentImages?: boolean;
+    aiRewrite?: boolean;
   }): Promise<{
     success: boolean;
     title: string;
@@ -64,6 +68,7 @@ export class ZTTeamCrawlerService {
       existingImageUrl,
       forceRecreate = false,
       keepContentImages = true,
+      aiRewrite = false,
     } = params;
 
     this.logger.log(`Starting Crawl -> 2K AI Image -> WordPress -> Fanpage pipeline for: ${sourceUrl}`);
@@ -77,13 +82,29 @@ export class ZTTeamCrawlerService {
       throw new HttpException('Không thể lấy nội dung câu chuyện từ link nguồn', HttpStatus.BAD_REQUEST);
     }
 
-    const cleanContent = this.fetcherService.ztteam_cleanStoryContent(storyData.content);
-    const storyTitle = storyData.title.trim();
+    let cleanContent = this.fetcherService.ztteam_cleanStoryContent(storyData.content);
+    let storyTitle = storyData.title.trim();
 
     /** ZTTeam Gatekeeper: Kiểm duyệt chất lượng tiêu đề và nội dung */
     const validation = this.fetcherService.ztteam_validateStoryArticle(storyTitle, cleanContent);
     if (!validation.isValid) {
       throw new HttpException(`Nội dung không đạt tiêu chuẩn bài viết (${validation.reason})`, HttpStatus.BAD_REQUEST);
+    }
+
+    /** 1.0 ZTTeam AI Rewrite (DeepSeek): Viết lại toàn bộ tiêu đề + nội dung, giữ giọng văn, độ dài, cách dẫn dắt.
+     *  Lỗi hoặc không đạt chuẩn => tự động dùng nội dung gốc, KHÔNG làm gián đoạn pipeline. */
+    let rewrittenHtmlForWp: string | null = null;
+    if (aiRewrite) {
+      const rewrite = await this.ztteam_applyAiRewrite(storyTitle, cleanContent, storyData, keepContentImages);
+      if (rewrite) {
+        storyTitle = rewrite.title;
+        cleanContent = rewrite.plainContent;
+        rewrittenHtmlForWp = rewrite.contentForWp;
+      } else {
+        this.telegramService.ztteam_sendMessage(
+          `⚠️ [AI Rewrite] Không viết lại được bài, đã đăng NỘI DUNG GỐC.\nNguồn: ${sourceUrl}`
+        ).catch(() => {});
+      }
     }
 
     /** 1.1 Tải và lưu trữ ảnh gốc từ website nguồn vào ổ cứng VPS làm bản dự phòng an toàn */
@@ -139,9 +160,11 @@ export class ZTTeamCrawlerService {
     }
 
     /** 3. Post to WordPress Target Site with 2K image as Featured Media */
-    const contentForWp = (keepContentImages && storyData.cleanHtmlWithImages)
-      ? storyData.cleanHtmlWithImages
-      : cleanContent;
+    const contentForWp = rewrittenHtmlForWp
+      ? rewrittenHtmlForWp
+      : (keepContentImages && storyData.cleanHtmlWithImages)
+        ? storyData.cleanHtmlWithImages
+        : cleanContent;
 
     const wpResult = await this.wordpressService.ztteam_createPost(targetSiteId, {
       title: storyTitle,
@@ -587,12 +610,64 @@ export class ZTTeamCrawlerService {
     };
   }
 
-  async ztteam_createSource(siteId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean }) {
+  /**
+   * ZTTeam: Chạy AI viết lại toàn bộ bài viết và ghép lại nội dung đăng WordPress.
+   * Trả về null nếu không viết lại được (dùng bản gốc).
+   */
+  private async ztteam_applyAiRewrite(
+    title: string,
+    plainContent: string,
+    storyData: any,
+    keepContentImages: boolean,
+  ): Promise<{ title: string; plainContent: string; contentForWp: string } | null> {
+    try {
+      let plan: ZTTeamRewritePlan | null = null;
+      if (keepContentImages && storyData.cleanHtmlWithImages) {
+        plan = ztteam_buildHtmlRewritePlan(storyData.cleanHtmlWithImages, plainContent)
+          || ztteam_buildPlainWithImagesPlan(plainContent, storyData.images || []);
+      } else {
+        plan = ztteam_buildPlainRewritePlan(plainContent);
+      }
+      if (!plan) {
+        this.logger.warn(`[AI Rewrite] Không tách được đoạn văn để viết lại: "${title}"`);
+        return null;
+      }
+
+      this.logger.log(`[AI Rewrite] Bắt đầu viết lại "${title}" (${plan.segments.length} đoạn, chế độ ${plan.mode})`);
+      const result = await this.aiService.ztteam_rewriteFullArticle(title, plan.segments);
+      if (!result) return null;
+
+      const newPlain = result.segments.join('\n\n');
+      const check = this.fetcherService.ztteam_validateStoryArticle(result.title, newPlain);
+      let finalTitle = result.title;
+      if (!check.isValid) {
+        /** Tiêu đề mới không đạt => giữ tiêu đề gốc; nếu vẫn không đạt => dùng bản gốc toàn bộ */
+        const checkBody = this.fetcherService.ztteam_validateStoryArticle(title, newPlain);
+        if (!checkBody.isValid) {
+          this.logger.warn(`[AI Rewrite] Bản viết lại không qua kiểm duyệt (${checkBody.reason}), dùng bản gốc.`);
+          return null;
+        }
+        finalTitle = title;
+      }
+
+      return {
+        title: finalTitle,
+        plainContent: newPlain,
+        contentForWp: plan.rebuild(result.segments),
+      };
+    } catch (err: any) {
+      this.logger.warn(`[AI Rewrite] Lỗi không mong muốn, dùng bản gốc: ${err.message}`);
+      return null;
+    }
+  }
+
+  async ztteam_createSource(siteId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean; aiRewrite?: boolean }) {
     try {
       const extractRules = {
         addLinkToComment: data.addLinkToComment !== undefined ? data.addLinkToComment : true,
         batchSize: data.batchSize ? Math.max(1, Math.min(10, Number(data.batchSize))) : 1,
         keepContentImages: data.keepContentImages !== undefined ? Boolean(data.keepContentImages) : true,
+        aiRewrite: Boolean(data.aiRewrite),
       };
       return await this.prisma.ztteam_crawl_sources.create({
         data: {
@@ -610,7 +685,7 @@ export class ZTTeamCrawlerService {
     }
   }
 
-  async ztteam_updateSource(sourceId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean }) {
+  async ztteam_updateSource(sourceId: string, data: { sourceUrl: string; sourceCategory: string; frequencyCron: string; addLinkToComment?: boolean; batchSize?: number; keepContentImages?: boolean; aiRewrite?: boolean }) {
     const existing = await this.prisma.ztteam_crawl_sources.findUnique({ where: { id: sourceId } });
     let extractRules: any = {};
     try {
@@ -628,6 +703,9 @@ export class ZTTeamCrawlerService {
     }
     if (data.keepContentImages !== undefined) {
       extractRules.keepContentImages = Boolean(data.keepContentImages);
+    }
+    if (data.aiRewrite !== undefined) {
+      extractRules.aiRewrite = Boolean(data.aiRewrite);
     }
 
     return this.prisma.ztteam_crawl_sources.update({

@@ -106,12 +106,27 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
 
         this.logger.log(`Crawling source: ${source.source_url} for site: ${source.target_site.wp_url}`);
         
+        /** ZTTeam: Nguồn bật AI viết lại cần nhiều thời gian hơn (12 phút), nguồn thường giữ nguyên 5 phút */
+        let sourceAiRewrite = false;
         try {
-          const SOURCE_TIMEOUT_MS = 5 * 60 * 1000; /** 5 phút tối đa cho mỗi nguồn */
+          sourceAiRewrite = Boolean(JSON.parse(source.extract_rules_json || '{}').aiRewrite);
+        } catch (e) {}
+        const SOURCE_TIMEOUT_MS = (sourceAiRewrite ? 12 : 5) * 60 * 1000;
+
+        /** An toàn: Không bắt đầu nguồn mới nếu có thể vượt quá lock của chu kỳ cron (tránh 2 tiến trình chạy chồng => đăng trùng bài).
+         *  Nguồn bị hoãn chưa được đánh dấu thời gian nên sẽ được cào ở lượt cron kế tiếp. */
+        const cycleElapsed = Date.now() - this.lastStartedAt;
+        if (cycleElapsed + SOURCE_TIMEOUT_MS > this.MAX_CRAWL_LOCK_DURATION_MS - 60 * 1000) {
+          this.logger.log(`Hoãn các nguồn còn lại sang lượt cron kế tiếp (chu kỳ đã chạy ${Math.round(cycleElapsed / 60000)} phút).`);
+          break;
+        }
+
+        try {
+          const sourceDeadline = Date.now() + SOURCE_TIMEOUT_MS;
           await Promise.race([
-            this.ztteam_crawlSource(source),
+            this.ztteam_crawlSource(source, sourceDeadline),
             new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error(`Timeout 5 phút khi cào nguồn: ${source.source_url}`)), SOURCE_TIMEOUT_MS)
+              setTimeout(() => reject(new Error(`Timeout ${SOURCE_TIMEOUT_MS / 60000} phút khi cào nguồn: ${source.source_url}`)), SOURCE_TIMEOUT_MS)
             )
           ]);
         } catch (error: any) {
@@ -244,7 +259,7 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
     return Array.from(extractedSet).slice(0, 15);
   }
 
-  private async ztteam_crawlSource(source: any) {
+  private async ztteam_crawlSource(source: any, sourceDeadline: number = Date.now() + 5 * 60 * 1000) {
     /** 1. Quét phân trang động linh hoạt (Dynamic Flexible Pagination) */
     const urlsToFetch: string[] = [];
     const maxScanPages = 10; /** Quét tối đa 10 trang lưu trữ */
@@ -355,14 +370,23 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
 
         /** Call full automated pipeline: Crawl clean story -> Source Image -> WordPress + 2K Featured Image -> Queue Fanpage (luân phiên Least-Loaded) */
         let keepContentImages = true;
+        let aiRewrite = false;
         try {
           const rules = JSON.parse(source.extract_rules_json || '{}');
           if (rules.keepContentImages !== undefined) {
             keepContentImages = Boolean(rules.keepContentImages);
           }
+          aiRewrite = Boolean(rules.aiRewrite);
         } catch (e) {}
 
-        const ARTICLE_TIMEOUT_MS = 3 * 60 * 1000; /** 3 phút tối đa cho một bài viết */
+        /** 3 phút tối đa cho một bài viết, 6 phút nếu bật AI viết lại toàn bộ nội dung */
+        const ARTICLE_TIMEOUT_MS = (aiRewrite ? 6 : 3) * 60 * 1000;
+
+        /** Bài viết AI không được phép chạy vượt thời hạn của nguồn => để dành cho lượt sau (không ghi lịch sử) */
+        if (aiRewrite && Date.now() + ARTICLE_TIMEOUT_MS > sourceDeadline) {
+          this.logger.log(`[AI Rewrite] Không đủ thời gian còn lại của nguồn ${source.source_url}, các bài còn lại sẽ cào ở lượt sau.`);
+          break;
+        }
         const result = await Promise.race([
           this.crawlerService.ztteam_crawlAndPublishStory({
             sourceId: source.id,
@@ -370,9 +394,10 @@ export class ZTTeamCrawlerCron implements OnApplicationBootstrap {
             targetSiteId: source.target_site_id,
             sourceCategory: source.source_category,
             keepContentImages,
+            aiRewrite,
           }),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Timeout 3 phút khi xử lý bài viết: ${url}`)), ARTICLE_TIMEOUT_MS)
+            setTimeout(() => reject(new Error(`Timeout ${ARTICLE_TIMEOUT_MS / 60000} phút khi xử lý bài viết: ${url}`)), ARTICLE_TIMEOUT_MS)
           )
         ]);
 

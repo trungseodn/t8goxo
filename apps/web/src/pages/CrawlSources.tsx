@@ -51,6 +51,7 @@ export default function WordPressSites() {
   const [frequencyCron, setFrequencyCron] = useState('0 */6 * * *');
   const [batchSize, setBatchSize] = useState<number>(1);
   const [keepContentImages, setKeepContentImages] = useState(true);
+  const [aiRewrite, setAiRewrite] = useState(false);
 
   /** Fanpages state */
   const [pages, setPages] = useState<any[]>([]);
@@ -70,6 +71,7 @@ export default function WordPressSites() {
   const [autoCategory, setAutoCategory] = useState('');
   const [autoAddComment, setAutoAddComment] = useState(true);
   const [autoKeepContentImages, setAutoKeepContentImages] = useState(true);
+  const [autoAiRewrite, setAutoAiRewrite] = useState(false);
   const [isAutoRunning, setIsAutoRunning] = useState(false);
   const [autoStepText, setAutoStepText] = useState('');
   const [autoResult, setAutoResult] = useState<any>(null);
@@ -210,6 +212,7 @@ export default function WordPressSites() {
     setFrequencyCron('0 */6 * * *');
     setBatchSize(1);
     setKeepContentImages(true);
+    setAiRewrite(false);
   };
 
   const ztteam_handleEditSource = (source: CrawlSource) => {
@@ -222,9 +225,11 @@ export default function WordPressSites() {
       const rules = JSON.parse(source.extract_rules_json || '{}');
       setBatchSize(rules.batchSize ? Number(rules.batchSize) : 1);
       setKeepContentImages(rules.keepContentImages !== false);
+      setAiRewrite(Boolean(rules.aiRewrite));
     } catch (e) {
       setBatchSize(1);
       setKeepContentImages(true);
+      setAiRewrite(false);
     }
   };
 
@@ -232,14 +237,14 @@ export default function WordPressSites() {
     e.preventDefault();
     try {
       if (editingSourceId) {
-        await ztteam_updateSource(editingSourceId, { sourceUrl, sourceCategory, frequencyCron, batchSize, keepContentImages });
+        await ztteam_updateSource(editingSourceId, { sourceUrl, sourceCategory, frequencyCron, batchSize, keepContentImages, aiRewrite });
         ztteam_showToast('Cập nhật website nguồn thành công', 'success');
       } else {
         const urls = sourceUrl.split('\n').map(u => u.trim()).filter(u => u);
         let successCount = 0;
         for (const url of urls) {
           try {
-            await ztteam_createSource(siteId, { sourceUrl: url, sourceCategory, frequencyCron, batchSize, keepContentImages });
+            await ztteam_createSource(siteId, { sourceUrl: url, sourceCategory, frequencyCron, batchSize, keepContentImages, aiRewrite });
             successCount++;
           } catch (e) {
             console.error(`Failed to add source ${url}`, e);
@@ -282,19 +287,21 @@ export default function WordPressSites() {
     setIsAutoRunning(true);
     setAutoError('');
     setAutoResult(null);
-    setAutoStepText('1/4: Đang cào sạch câu chuyện & vượt tường lửa Cloudflare...');
+    setAutoStepText(autoAiRewrite
+      ? '1/4: Đang cào bài & AI (DeepSeek) viết lại toàn bộ nội dung (có thể mất 1-3 phút)...'
+      : '1/4: Đang cào sạch câu chuyện & vượt tường lửa Cloudflare...');
 
     const timer1 = setTimeout(() => {
       setAutoStepText('2/4: AI đang phân tích bối cảnh & vẽ ảnh 2K...');
-    }, 4000);
+    }, autoAiRewrite ? 90000 : 4000);
 
     const timer2 = setTimeout(() => {
       setAutoStepText('3/4: Đang đăng bài viết + Featured Image 2K lên WordPress...');
-    }, 14000);
+    }, autoAiRewrite ? 120000 : 14000);
 
     const timer3 = setTimeout(() => {
       setAutoStepText('4/4: Đang chuẩn bị bài Fanpage (Title VIẾT HOA + Part 1/Hook)...');
-    }, 22000);
+    }, autoAiRewrite ? 150000 : 22000);
 
     try {
       const res = await useCrawlerStore.getState().ztteam_crawlAndProcess({
@@ -304,6 +311,7 @@ export default function WordPressSites() {
         addLinkToComment: autoAddComment,
         sourceCategory: autoCategory || undefined,
         keepContentImages: autoKeepContentImages,
+        aiRewrite: autoAiRewrite,
       });
 
       clearTimeout(timer1);
@@ -629,7 +637,7 @@ export default function WordPressSites() {
                         </h5>
                         <div className="flex items-center gap-3">
                           <button
-                            onClick={() => { setShowSourceForm(site.id); setEditingSourceId(null); setSourceUrl(''); setSourceCategory(''); setFrequencyCron('0 */6 * * *'); setBatchSize(1); setKeepContentImages(true); }}
+                            onClick={() => { setShowSourceForm(site.id); setEditingSourceId(null); setSourceUrl(''); setSourceCategory(''); setFrequencyCron('0 */6 * * *'); setBatchSize(1); setKeepContentImages(true); setAiRewrite(false); }}
                             className="text-cyan-400 hover:text-cyan-300 text-xs font-bold flex items-center gap-1 uppercase tracking-wide"
                           >
                             <span className="material-symbols-outlined text-base">add_circle</span>
@@ -716,6 +724,23 @@ export default function WordPressSites() {
                                   </div>
                                 </label>
                               </div>
+                              <div className="md:col-span-2">
+                                <label className="flex items-center justify-between p-3.5 bg-fb-surface rounded-2xl cursor-pointer border border-white/5">
+                                  <div>
+                                    <span className="text-xs font-bold text-fb-text block">AI viết lại toàn bộ nội dung (DeepSeek)</span>
+                                    <span className="text-[11px] text-fb-text-muted block mt-0.5">AI viết lại tiêu đề + toàn bài theo đúng giọng văn, độ dài, cách mở đầu và dẫn dắt của bài gốc. Nếu AI lỗi sẽ tự động đăng nội dung gốc.</span>
+                                  </div>
+                                  <div className="relative inline-flex items-center cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={aiRewrite}
+                                      onChange={(e) => setAiRewrite(e.target.checked)}
+                                      className="sr-only peer"
+                                    />
+                                    <div className="w-9 h-5 bg-fb-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                                  </div>
+                                </label>
+                              </div>
                             </div>
 
                             {/** Gợi ý trực tiếp cấu hình theo số lượng Fanpage */}
@@ -790,6 +815,16 @@ export default function WordPressSites() {
                                     })()} bài
                                   </span>
                                 </div>
+                                {(() => {
+                                  try {
+                                    return JSON.parse(source.extract_rules_json || '{}').aiRewrite ? (
+                                      <div>
+                                        <span className="text-[9px] text-fb-text-muted uppercase tracking-wider font-extrabold block">AI REWRITE</span>
+                                        <span className="font-bold text-emerald-400 truncate block">Đang bật</span>
+                                      </div>
+                                    ) : null;
+                                  } catch (e) { return null; }
+                                })()}
                                 <div>
                                   <span className="text-[9px] text-fb-text-muted uppercase tracking-wider font-extrabold block">LẦN TRƯỚC</span>
                                   <span className="font-bold text-fb-text truncate block">{source.last_crawled_at ? new Date(source.last_crawled_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : 'Chưa chạy'}</span>
@@ -1216,6 +1251,26 @@ export default function WordPressSites() {
                         type="checkbox"
                         checked={autoKeepContentImages}
                         onChange={(e) => setAutoKeepContentImages(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-9 h-5 bg-fb-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
+                    </label>
+                  </div>
+
+                  <div className="flex items-center justify-between p-3.5 bg-fb-surface-hover/40 rounded-2xl border border-white/5">
+                    <div>
+                      <span className="text-xs font-bold text-fb-text block">
+                        AI viết lại toàn bộ nội dung (DeepSeek)
+                      </span>
+                      <span className="text-[11px] text-fb-text-muted">
+                        Viết lại tiêu đề + toàn bài theo đúng giọng văn, độ dài và cách dẫn dắt của bài gốc. AI lỗi sẽ đăng nội dung gốc
+                      </span>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoAiRewrite}
+                        onChange={(e) => setAutoAiRewrite(e.target.checked)}
                         className="sr-only peer"
                       />
                       <div className="w-9 h-5 bg-fb-surface-hover peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500"></div>
