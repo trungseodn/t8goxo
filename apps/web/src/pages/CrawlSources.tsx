@@ -73,6 +73,14 @@ export default function WordPressSites() {
   const [autoKeepContentImages, setAutoKeepContentImages] = useState(true);
   const [autoAiRewrite, setAutoAiRewrite] = useState(false);
   const [isAutoRunning, setIsAutoRunning] = useState(false);
+
+  /** Batch Rewrite Queued Posts state */
+  const [showQueueRewriteModal, setShowQueueRewriteModal] = useState(false);
+  const [rewriteStatus, setRewriteStatus] = useState<any>(null);
+  const [isStartingRewrite, setIsStartingRewrite] = useState(false);
+  const [rewriteLimit, setRewriteLimit] = useState<number>(0);
+  const [rewriteConcurrency, setRewriteConcurrency] = useState<number>(3);
+  const [rewriteOnlyCompleted, setRewriteOnlyCompleted] = useState<boolean>(true);
   const [autoStepText, setAutoStepText] = useState('');
   const [autoResult, setAutoResult] = useState<any>(null);
   const [autoError, setAutoError] = useState('');
@@ -333,6 +341,49 @@ export default function WordPressSites() {
     }
   };
 
+  /** ──── Batch Rewrite Queued Posts Handlers ──── */
+  const ztteam_fetchRewriteStatus = async () => {
+    try {
+      const res = await api.get('/wordpress/rewrite-queued-status');
+      setRewriteStatus(res.data);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (showQueueRewriteModal) {
+      ztteam_fetchRewriteStatus();
+      const interval = setInterval(ztteam_fetchRewriteStatus, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [showQueueRewriteModal]);
+
+  const ztteam_handleStartBatchRewrite = async () => {
+    setIsStartingRewrite(true);
+    try {
+      const res = await api.post('/wordpress/rewrite-queued', {
+        limit: rewriteLimit,
+        concurrency: rewriteConcurrency,
+        onlyCompleted: rewriteOnlyCompleted,
+      });
+      ztteam_showToast(res.data.message || 'Đã khởi chạy tiến trình viết lại', 'success');
+      ztteam_fetchRewriteStatus();
+    } catch (e: any) {
+      ztteam_showToast(e.response?.data?.message || e.message || 'Lỗi khởi chạy', 'error');
+    } finally {
+      setIsStartingRewrite(false);
+    }
+  };
+
+  const ztteam_handleStopBatchRewrite = async () => {
+    try {
+      const res = await api.post('/wordpress/stop-rewrite-queued');
+      ztteam_showToast(res.data.message || 'Đã gửi lệnh dừng', 'info');
+      ztteam_fetchRewriteStatus();
+    } catch (e: any) {
+      ztteam_showToast(e.response?.data?.message || e.message || 'Lỗi dừng tiến trình', 'error');
+    }
+  };
+
   /** ──── Test scrape handlers ──── */
   const ztteam_handleTestScrape = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -384,11 +435,18 @@ export default function WordPressSites() {
         </div>
         <div className="grid grid-cols-2 gap-2 w-full sm:w-auto sm:flex sm:items-center sm:gap-2.5">
           <button
+            onClick={() => setShowQueueRewriteModal(true)}
+            className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white px-3 sm:px-4 py-2 rounded-full text-xs font-black shadow-md hover:opacity-95 transition-all shrink-0 whitespace-nowrap shadow-emerald-500/20"
+          >
+            <span className="material-symbols-outlined text-base">auto_fix_high</span>
+            <span>Viết lại AI Hàng Chờ</span>
+          </button>
+          <button
             onClick={() => ztteam_handleOpenAutoPipeline()}
-            className="col-span-2 sm:col-span-1 flex items-center justify-center gap-1.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-3 sm:px-4 py-2 rounded-full text-xs font-black shadow-md hover:opacity-95 transition-all shrink-0 whitespace-nowrap shadow-emerald-500/20"
+            className="flex items-center justify-center gap-1.5 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-3 sm:px-4 py-2 rounded-full text-xs font-black shadow-md hover:opacity-95 transition-all shrink-0 whitespace-nowrap shadow-emerald-500/20"
           >
             <span className="material-symbols-outlined text-base">bolt</span>
-            <span>Cào &amp; Đăng Tự Động (1-Click)</span>
+            <span>Cào &amp; Đăng (1-Click)</span>
           </button>
           <button
             onClick={() => ztteam_fetchSites()}
@@ -1343,6 +1401,205 @@ export default function WordPressSites() {
                     )}
                   </button>
                 </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ──── Batch Rewrite Queued Posts Modal ──── */}
+      {showQueueRewriteModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+          <div className="bg-fb-surface rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-5 pb-4 border-b border-white/5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
+                  <span className="material-symbols-outlined text-2xl">auto_fix_high</span>
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-fb-text">
+                    Viết lại AI Bài viết Hàng Chờ (DeepSeek)
+                  </h3>
+                  <p className="text-xs text-fb-text-muted mt-0.5">
+                    Tự động viết lại nội dung &amp; tiêu đề trên WordPress cho các bài đang có video chờ đăng.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowQueueRewriteModal(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-fb-surface-hover text-fb-text-muted hover:text-white transition-colors"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 sm:p-6 space-y-5 overflow-y-auto custom-scrollbar flex-1">
+              {/* Thống kê hàng chờ */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-fb-surface-hover/50 p-4 rounded-2xl border border-white/5 text-center">
+                  <div className="text-[11px] font-bold text-fb-text-muted uppercase tracking-wider mb-1">Hàng chờ đăng</div>
+                  <div className="text-xl sm:text-2xl font-black text-blue-400">
+                    {rewriteStatus ? rewriteStatus.totalQueued : '...'}
+                  </div>
+                </div>
+                <div className="bg-fb-surface-hover/50 p-4 rounded-2xl border border-white/5 text-center">
+                  <div className="text-[11px] font-bold text-fb-text-muted uppercase tracking-wider mb-1">Đã viết lại AI</div>
+                  <div className="text-xl sm:text-2xl font-black text-emerald-400">
+                    {rewriteStatus ? rewriteStatus.totalRewritten : '...'}
+                  </div>
+                </div>
+                <div className="bg-fb-surface-hover/50 p-4 rounded-2xl border border-white/5 text-center">
+                  <div className="text-[11px] font-bold text-fb-text-muted uppercase tracking-wider mb-1">Chưa viết lại</div>
+                  <div className="text-xl sm:text-2xl font-black text-amber-400">
+                    {rewriteStatus ? rewriteStatus.pendingRewrite : '...'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Tiến trình đang chạy */}
+              {rewriteStatus?.isRunning ? (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-2xl p-4 sm:p-5 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></div>
+                      <span className="text-xs font-bold text-emerald-400">Tiến trình viết lại đang chạy ngầm...</span>
+                    </div>
+                    <span className="text-xs font-mono font-bold text-fb-text-muted">
+                      {rewriteStatus.progress.processed} / {rewriteStatus.progress.total}
+                    </span>
+                  </div>
+
+                  {rewriteStatus.progress.currentTitle && (
+                    <div className="bg-black/30 p-3 rounded-xl">
+                      <div className="text-[10px] text-fb-text-muted uppercase font-bold mb-1">Đang xử lý bài:</div>
+                      <div className="text-xs text-fb-text font-medium line-clamp-2">
+                        {rewriteStatus.progress.currentTitle}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-[11px] text-fb-text-muted">
+                      <span>Thành công: <strong className="text-emerald-400">{rewriteStatus.progress.success}</strong></span>
+                      <span>Thất bại: <strong className="text-red-400">{rewriteStatus.progress.failed}</strong></span>
+                    </div>
+                    <div className="w-full bg-black/40 h-2.5 rounded-full overflow-hidden">
+                      <div
+                        className="bg-gradient-to-r from-emerald-500 to-teal-400 h-full transition-all duration-500 rounded-full"
+                        style={{
+                          width: `${Math.min(100, Math.round((rewriteStatus.progress.processed / Math.max(1, rewriteStatus.progress.total)) * 100))}%`
+                        }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2">
+                    <p className="text-[11px] text-fb-text-muted">
+                      💡 Tiến trình chạy độc lập trong nền, bạn có thể đóng cửa sổ này bất cứ lúc nào.
+                    </p>
+                    <button
+                      onClick={ztteam_handleStopBatchRewrite}
+                      className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-full text-xs font-bold transition-all shrink-0"
+                    >
+                      Dừng tiến trình
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Cấu hình trước khi chạy */
+                <div className="space-y-4">
+                  <div className="p-4 rounded-2xl bg-fb-surface-hover/30 border border-white/5 space-y-3">
+                    {/* Switch: Chỉ bài đã có video COMPLETED */}
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-bold text-fb-text">Ưu tiên video đã render xong (COMPLETED)</span>
+                        <p className="text-[11px] text-fb-text-muted mt-0.5">
+                          Viết lại các bài chuẩn bị xuất bản sớm nhất trước, sau đó đến các bài đang chờ render.
+                        </p>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={rewriteOnlyCompleted}
+                          onChange={(e) => setRewriteOnlyCompleted(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-black/40 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+                      <div>
+                        <label className="text-xs font-bold text-fb-text-muted mb-1 block uppercase tracking-wider">
+                          Số luồng song song
+                        </label>
+                        <select
+                          value={rewriteConcurrency}
+                          onChange={(e) => setRewriteConcurrency(parseInt(e.target.value, 10))}
+                          className="w-full py-2.5 px-3 rounded-xl bg-fb-surface text-fb-text text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 border border-white/5"
+                        >
+                          <option value={1}>1 luồng (Chậm, an toàn nhất)</option>
+                          <option value={2}>2 luồng</option>
+                          <option value={3}>3 luồng (Khuyên dùng)</option>
+                          <option value={4}>4 luồng</option>
+                          <option value={5}>5 luồng (Nhanh nhất)</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-bold text-fb-text-muted mb-1 block uppercase tracking-wider">
+                          Giới hạn số bài (0 = Tất cả)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={rewriteLimit}
+                          onChange={(e) => setRewriteLimit(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                          placeholder="0 = Không giới hạn"
+                          className="w-full py-2.5 px-3 rounded-xl bg-fb-surface text-fb-text text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 border border-white/5"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs text-blue-300 flex items-start gap-2">
+                    <span className="material-symbols-outlined text-base shrink-0 mt-0.5">info</span>
+                    <div>
+                      <strong>Cơ chế tự động Just-in-Time:</strong> Ngay cả khi chưa chạy hết toàn bộ hàng chờ, Cron xuất bản Facebook vẫn sẽ tự động viết lại bài trên WordPress ngay trước khi đăng bài nếu bài đó chưa được viết lại.
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 sm:p-5 border-t border-white/5 flex items-center justify-end gap-3 bg-fb-surface">
+              <button
+                onClick={() => setShowQueueRewriteModal(false)}
+                className="px-4 py-2 bg-fb-surface-hover hover:bg-fb-surface-hover/80 text-fb-text-muted hover:text-white rounded-full text-xs font-bold transition-colors"
+              >
+                Đóng
+              </button>
+              {!rewriteStatus?.isRunning && (
+                <button
+                  onClick={ztteam_handleStartBatchRewrite}
+                  disabled={isStartingRewrite || rewriteStatus?.pendingRewrite === 0}
+                  className="px-6 py-2 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-full text-xs font-bold shadow-md hover:opacity-95 transition-all flex items-center gap-1.5 disabled:opacity-50 shadow-emerald-500/20"
+                >
+                  {isStartingRewrite ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Đang khởi động...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-base">play_arrow</span>
+                      <span>Bắt đầu Viết Lại Ngầm</span>
+                    </>
+                  )}
+                </button>
               )}
             </div>
           </div>

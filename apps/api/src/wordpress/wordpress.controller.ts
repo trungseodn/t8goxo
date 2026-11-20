@@ -101,4 +101,26 @@ export class ZTTeamWordpressController {
   ) {
     return this.wordpressService.ztteam_bulkSyncPages(req.user.sub, body);
   }
+
+  @Post('rewrite-queued')
+  ztteam_startBatchRewrite(
+    @Body() body: { limit?: number; concurrency?: number; onlyCompleted?: boolean }
+  ) {
+    return this.wordpressService.ztteam_startBatchRewrite(body);
+  }
+
+  @Post('stop-rewrite-queued')
+  ztteam_stopBatchRewrite() {
+    return this.wordpressService.ztteam_stopBatchRewrite();
+  }
+
+  @Get('rewrite-queued-status')
+  ztteam_getRewriteQueuedStatus() {
+    return this.wordpressService.ztteam_getRewriteQueuedStatus();
+  }
+
+  @Post('rewrite-single-image/:imageId')
+  ztteam_rewriteSingleImage(@Param('imageId') imageId: string) {
+    return this.wordpressService.ztteam_rewriteArticleForImage(imageId);
+  }
 }

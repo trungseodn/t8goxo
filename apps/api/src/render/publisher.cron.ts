@@ -8,6 +8,7 @@ import * as path from 'path';
 import { ztteam_getReelsPath, ztteam_getImagesPath, ztteam_getStorageRoot } from '../common/ztteam_storage.util';
 import { TelegramService, ztteam_extractErrorMessage } from '../telegram/telegram.service';
 import { ztteam_getNewsComment } from '../common/ztteam_news_comment.util';
+import { ZTTeamWordpressService } from '../wordpress/wordpress.service';
 
 /**
  * ZTTeam: Kho Mồi Kích Hoạt Đa Dạng (Dynamic Viral Hook Comments)
@@ -56,6 +57,7 @@ export class ZTTeamPublisherCron {
     private readonly facebookService: ZTTeamFacebookService,
     private readonly eventEmitter: EventEmitter2,
     private readonly telegramService: TelegramService,
+    private readonly wordpressService: ZTTeamWordpressService,
   ) { }
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -638,6 +640,21 @@ export class ZTTeamPublisherCron {
         await this.prisma.ztteam_images.delete({ where: { id: image.id } }).catch(() => {});
         return;
       }
+
+      /** ZTTeam: Đảm bảo bài viết trên WordPress ĐÃ ĐƯỢC AI VIẾT LẠI trước khi xuất bản link lên Facebook */
+      if (image.ai_script !== 'AI_REWRITTEN' && image.wp_post_id) {
+        try {
+          this.logger.log(`[Just-In-Time Guard] Bài viết #${image.wp_post_id} chưa được viết lại AI. Đang tự động viết lại trước khi xuất bản lên Facebook...`);
+          const rwRes = await this.wordpressService.ztteam_rewriteArticleForImage(image.id);
+          if (rwRes && rwRes.success && rwRes.newTitle) {
+            image.wp_post_title = rwRes.newTitle;
+            image.ai_script = 'AI_REWRITTEN';
+          }
+        } catch (rwErr: any) {
+          this.logger.warn(`[Just-In-Time Guard] Viết lại bài #${image.wp_post_id} trước khi xuất bản không thành công: ${rwErr.message}`);
+        }
+      }
+
       let absoluteImagePath = ztteam_getImagesPath(image.id, 'output.png');
 
       /** Fallback to image.image_url if output.png is not in standard dir */

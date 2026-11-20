@@ -12,6 +12,9 @@ import { ZTTeamHtmlCleanerService } from './html-cleaner.service';
 import { ztteam_getStorageRoot, ztteam_getImagesPath } from '../common/ztteam_storage.util';
 import { ztteam_getNewsComment, ZTTEAM_NEWS_CAPTION_CTA } from '../common/ztteam_news_comment.util';
 import { ZTTeamHookVideoService } from '../media/hook-video.service';
+import { ZTTeamAIService } from '../ai/ai.service';
+import { ztteam_buildHtmlRewritePlan, ztteam_buildPlainRewritePlan } from '../crawler/article-rewrite.util';
+import * as cheerio from 'cheerio';
 
 @Injectable()
 export class ZTTeamWordpressService {
@@ -22,6 +25,7 @@ export class ZTTeamWordpressService {
     private readonly prisma: PrismaService,
     private readonly httpService: HttpService,
     private readonly htmlCleaner: ZTTeamHtmlCleanerService,
+    private readonly aiService: ZTTeamAIService,
     @Inject(forwardRef(() => ZTTeamHookVideoService))
     private readonly hookVideoService: ZTTeamHookVideoService,
     private readonly eventEmitter: EventEmitter2,
@@ -1423,5 +1427,285 @@ export class ZTTeamWordpressService {
       totalPostsSynced,
       message: summaryMsg
     };
+  }
+
+  /**
+   * ZTTeam: Viết lại bài viết WordPress tương ứng với 1 bản ghi hình ảnh/video trong hàng chờ
+   * - Lấy nội dung từ WordPress REST API qua wp_post_id
+   * - Tách HTML và gọi AI (DeepSeek) viết lại giữ nguyên cấu trúc ảnh
+   * - Cập nhật nội dung & tiêu đề mới lên WordPress
+   * - Cập nhật wp_post_title và đánh dấu ai_script = 'AI_REWRITTEN' trong ztteam_images
+   */
+  async ztteam_rewriteArticleForImage(
+    imageIdOrWpPostId: string
+  ): Promise<{ success: boolean; oldTitle?: string; newTitle?: string; message?: string }> {
+    // 1. Tìm bản ghi ảnh trong ztteam_images
+    const imgRecord = await this.prisma.ztteam_images.findFirst({
+      where: {
+        OR: [
+          { id: imageIdOrWpPostId },
+          { wp_post_id: imageIdOrWpPostId }
+        ]
+      },
+      include: { page: { include: { sources: true } } }
+    });
+
+    if (!imgRecord) {
+      return { success: false, message: `Không tìm thấy bản ghi ảnh ${imageIdOrWpPostId}` };
+    }
+
+    if (imgRecord.ai_script === 'AI_REWRITTEN') {
+      return { success: true, oldTitle: imgRecord.wp_post_title, newTitle: imgRecord.wp_post_title, message: `Bài viết #${imgRecord.wp_post_id} đã được AI viết lại trước đó.` };
+    }
+
+    if (!imgRecord.wp_post_id) {
+      return { success: false, message: `Bản ghi ${imgRecord.id} không có wp_post_id` };
+    }
+
+    // 2. Xác định Website WordPress đích
+    let targetSite: any = null;
+    if (imgRecord.page?.sources && imgRecord.page.sources.length > 0) {
+      const activeSource = imgRecord.page.sources.find(s => s.is_active && s.target_site_id);
+      if (activeSource) {
+        targetSite = await this.prisma.ztteam_target_sites.findUnique({ where: { id: activeSource.target_site_id } });
+      }
+    }
+    if (!targetSite) {
+      targetSite = await this.prisma.ztteam_target_sites.findFirst({ where: { status: 'active' } })
+        || await this.prisma.ztteam_target_sites.findFirst();
+    }
+    if (!targetSite) {
+      return { success: false, message: 'Không tìm thấy cấu hình Website WordPress đích' };
+    }
+
+    const appPassword = this.ztteam_decrypt(targetSite.wp_app_password_encrypted);
+    const authHeader = 'Basic ' + Buffer.from(`${targetSite.wp_username}:${appPassword}`).toString('base64');
+    const cleanUrl = targetSite.wp_url.replace(/\/$/, '');
+
+    // 3. Fetch bài viết gốc từ WordPress REST API
+    let wpPost: any = null;
+    try {
+      const res = await firstValueFrom(
+        this.httpService.get(`${cleanUrl}/wp-json/wp/v2/posts/${imgRecord.wp_post_id}`, {
+          headers: { Authorization: authHeader },
+          timeout: 20000,
+        })
+      );
+      wpPost = res.data;
+    } catch (e: any) {
+      this.logger.error(`[AI Rewrite] Lỗi khi lấy bài #${imgRecord.wp_post_id} từ WP: ${e.message}`);
+      return { success: false, message: `Lỗi kết nối WordPress: ${e.message}` };
+    }
+
+    const rawTitle = (wpPost.title?.raw || wpPost.title?.rendered || imgRecord.wp_post_title || '').trim();
+    const rawContentHtml = wpPost.content?.raw || wpPost.content?.rendered || '';
+
+    if (!rawContentHtml.trim()) {
+      return { success: false, message: `Nội dung bài #${imgRecord.wp_post_id} trên WP rỗng.` };
+    }
+
+    // 4. Giải mã HTML entity và trích xuất đoạn văn
+    const cleanTitle = cheerio.load(rawTitle).text().trim();
+    const plainContent = cheerio.load(rawContentHtml).text().replace(/\s+/g, ' ').trim();
+
+    const plan = ztteam_buildHtmlRewritePlan(rawContentHtml, plainContent)
+      || ztteam_buildPlainRewritePlan(plainContent);
+
+    if (!plan || plan.segments.length === 0) {
+      return { success: false, message: `Không bóc tách được cấu trúc đoạn văn cho bài #${imgRecord.wp_post_id}` };
+    }
+
+    this.logger.log(`[AI Rewrite Queue] Bắt đầu viết lại bài #${imgRecord.wp_post_id} ("${cleanTitle.slice(0, 50)}...") - ${plan.segments.length} đoạn`);
+
+    // 5. Gọi DeepSeek AI viết lại toàn bài
+    const rewriteResult = await this.aiService.ztteam_rewriteFullArticle(cleanTitle, plan.segments, { budgetMs: 180000 });
+    if (!rewriteResult || !rewriteResult.segments || rewriteResult.segments.length === 0) {
+      this.logger.warn(`[AI Rewrite Queue] AI không hoàn thành viết lại bài #${imgRecord.wp_post_id}, giữ nguyên bài gốc.`);
+      return { success: false, message: 'AI rewrite failed or timed out' };
+    }
+
+    const newTitle = rewriteResult.title || cleanTitle;
+    const newContentHtml = plan.rebuild(rewriteResult.segments);
+
+    // 6. Cập nhật bài viết lên WordPress
+    try {
+      await firstValueFrom(
+        this.httpService.post(
+          `${cleanUrl}/wp-json/wp/v2/posts/${imgRecord.wp_post_id}`,
+          {
+            title: newTitle,
+            content: newContentHtml,
+          },
+          {
+            headers: {
+              Authorization: authHeader,
+              'Content-Type': 'application/json',
+            },
+            timeout: 25000,
+          }
+        )
+      );
+      this.logger.log(`[AI Rewrite Queue] Cập nhật thành công bài #${imgRecord.wp_post_id} trên WordPress: "${newTitle.slice(0, 60)}..."`);
+    } catch (wpUpdateErr: any) {
+      this.logger.error(`[AI Rewrite Queue] Cập nhật WordPress thất bại cho bài #${imgRecord.wp_post_id}: ${wpUpdateErr.message}`);
+      return { success: false, message: `Lỗi cập nhật WP: ${wpUpdateErr.message}` };
+    }
+
+    // 7. Cập nhật các bản ghi trong ztteam_images
+    await this.prisma.ztteam_images.updateMany({
+      where: { wp_post_id: imgRecord.wp_post_id },
+      data: {
+        wp_post_title: newTitle,
+        ai_script: 'AI_REWRITTEN',
+        updated_at: new Date(),
+      }
+    });
+
+    return {
+      success: true,
+      oldTitle: cleanTitle,
+      newTitle: newTitle,
+    };
+  }
+
+  private isBatchRewriteRunning = false;
+  private shouldStopBatchRewrite = false;
+  private batchRewriteProgress = {
+    total: 0,
+    processed: 0,
+    success: 0,
+    failed: 0,
+    currentTitle: null as string | null,
+    startedAt: null as Date | null,
+  };
+
+  async ztteam_startBatchRewrite(options?: { limit?: number; concurrency?: number; onlyCompleted?: boolean }) {
+    if (this.isBatchRewriteRunning) {
+      return {
+        success: false,
+        message: 'Tiến trình viết lại bài đang chạy trong nền',
+        status: this.batchRewriteProgress,
+      };
+    }
+
+    this.shouldStopBatchRewrite = false;
+    this.isBatchRewriteRunning = true;
+
+    // Chạy ngầm không block HTTP request
+    this.ztteam_runBatchRewrite(options).catch(err => {
+      this.logger.error(`[Batch Rewrite] Lỗi tiến trình ngầm: ${err.message}`);
+      this.isBatchRewriteRunning = false;
+    });
+
+    return {
+      success: true,
+      message: 'Đã bắt đầu tiến trình viết lại AI cho các bài viết ở hàng chờ',
+      status: this.batchRewriteProgress,
+    };
+  }
+
+  async ztteam_stopBatchRewrite() {
+    this.shouldStopBatchRewrite = true;
+    return {
+      success: true,
+      message: 'Đã gửi lệnh dừng tiến trình viết lại bài.',
+      isRunning: this.isBatchRewriteRunning,
+    };
+  }
+
+  async ztteam_getRewriteQueuedStatus() {
+    const totalQueued = await this.prisma.ztteam_images.count({
+      where: { is_posted: false }
+    });
+    const totalRewritten = await this.prisma.ztteam_images.count({
+      where: { is_posted: false, ai_script: 'AI_REWRITTEN' }
+    });
+    const pendingRewrite = totalQueued - totalRewritten;
+
+    return {
+      isRunning: this.isBatchRewriteRunning,
+      progress: this.batchRewriteProgress,
+      totalQueued,
+      totalRewritten,
+      pendingRewrite,
+    };
+  }
+
+  private async ztteam_runBatchRewrite(options?: { limit?: number; concurrency?: number; onlyCompleted?: boolean }) {
+    try {
+      this.batchRewriteProgress.startedAt = new Date();
+      this.batchRewriteProgress.processed = 0;
+      this.batchRewriteProgress.success = 0;
+      this.batchRewriteProgress.failed = 0;
+
+      // 1. Lọc tất cả các bài viết duy nhất đang có trong hàng chờ chưa được viết lại
+      const unrewrittenImages = await this.prisma.ztteam_images.findMany({
+        where: {
+          is_posted: false,
+          OR: [
+            { ai_script: null },
+            { ai_script: { not: 'AI_REWRITTEN' } }
+          ],
+          ...(options?.onlyCompleted ? { video_status: 'COMPLETED' } : {})
+        },
+        select: { id: true, wp_post_id: true, wp_post_title: true, video_status: true },
+        orderBy: [
+          // Ưu tiên bài đã có video COMPLETED trước
+          { video_status: 'asc' },
+          { created_at: 'asc' }
+        ]
+      });
+
+      // Nhóm theo wp_post_id để tránh viết lại trùng bài
+      const uniqueMap = new Map<string, any>();
+      for (const img of unrewrittenImages) {
+        if (img.wp_post_id && !uniqueMap.has(img.wp_post_id)) {
+          uniqueMap.set(img.wp_post_id, img);
+        }
+      }
+
+      let candidateList = Array.from(uniqueMap.values());
+      if (options?.limit && options.limit > 0) {
+        candidateList = candidateList.slice(0, options.limit);
+      }
+
+      this.batchRewriteProgress.total = candidateList.length;
+      this.logger.log(`[Batch Rewrite] Bắt đầu viết lại ${candidateList.length} bài viết trong hàng chờ...`);
+
+      const concurrency = Math.max(1, Math.min(5, options?.concurrency || 2));
+
+      for (let i = 0; i < candidateList.length; i += concurrency) {
+        if (this.shouldStopBatchRewrite) {
+          this.logger.log('[Batch Rewrite] Nhận được tín hiệu dừng, kết thúc tiến trình.');
+          break;
+        }
+
+        const batch = candidateList.slice(i, i + concurrency);
+        await Promise.all(
+          batch.map(async (item) => {
+            if (this.shouldStopBatchRewrite) return;
+            this.batchRewriteProgress.currentTitle = item.wp_post_title;
+            try {
+              const res = await this.ztteam_rewriteArticleForImage(item.id);
+              if (res.success) {
+                this.batchRewriteProgress.success++;
+              } else {
+                this.batchRewriteProgress.failed++;
+              }
+            } catch (err: any) {
+              this.batchRewriteProgress.failed++;
+              this.logger.error(`[Batch Rewrite] Lỗi bài #${item.wp_post_id}: ${err.message}`);
+            } finally {
+              this.batchRewriteProgress.processed++;
+            }
+          })
+        );
+      }
+
+      this.logger.log(`[Batch Rewrite] Hoàn tất: ${this.batchRewriteProgress.success} thành công, ${this.batchRewriteProgress.failed} thất bại.`);
+    } finally {
+      this.isBatchRewriteRunning = false;
+      this.shouldStopBatchRewrite = false;
+    }
   }
 }

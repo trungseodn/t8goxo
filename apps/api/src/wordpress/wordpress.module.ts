@@ -5,9 +5,10 @@ import { ZTTeamHtmlCleanerService } from './html-cleaner.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { HttpModule } from '@nestjs/axios';
 import { ZTTeamMediaModule } from '../media/media.module';
+import { ZTTeamAIModule } from '../ai/ai.module';
 
 @Module({
-  imports: [PrismaModule, HttpModule, forwardRef(() => ZTTeamMediaModule)],
+  imports: [PrismaModule, HttpModule, ZTTeamAIModule, forwardRef(() => ZTTeamMediaModule)],
   controllers: [ZTTeamWordpressController],
   providers: [ZTTeamWordpressService, ZTTeamHtmlCleanerService],
   exports: [ZTTeamWordpressService]
