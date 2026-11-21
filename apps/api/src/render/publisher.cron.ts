@@ -49,8 +49,10 @@ export function ztteam_getRandomHookComment(seed?: string): string {
 export class ZTTeamPublisherCron {
   private readonly logger = new Logger(ZTTeamPublisherCron.name);
   private isRunning = false;
-  /** ZTTeam: Lưu vết thời điểm xuất bản gần nhất trên toàn hệ thống (mọi Page) để chống Burst API */
+  /** ZTTeam: Lưu vết thời điểm xuất bản gần nhất trên toàn hệ thống */
   private ztteam_lastGlobalPublishTimestamp = 0;
+  /** ZTTeam: Lưu vết thời điểm xuất bản gần nhất theo từng BM Account để tối ưu luồng chạy song song an toàn */
+  private ztteam_lastAccountPublishMap = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -240,15 +242,24 @@ export class ZTTeamPublisherCron {
               }
             }
 
-            for (const time of schedule_fixed_times as string[]) {
+            const sortedFixedTimes = [...(schedule_fixed_times as string[])].sort();
+            for (let i = 0; i < sortedFixedTimes.length; i++) {
+              const time = sortedFixedTimes[i];
               const [h, m] = time.split(':').map(Number);
               const fixedTimeMinutes = h * 60 + m;
 
               /**
-               * Cửa sổ xuất bản: từ giờ hẹn (fixedTimeMinutes) đến 60 phút sau.
-               * Giúp xử lý mượt mà khi hệ thống có hàng đợi nhiều page phải đăng tuần tự.
+               * Cửa sổ xuất bản: từ giờ hẹn (fixedTimeMinutes) đến trước khung giờ kế tiếp 5 phút
+               * (hoặc hết ngày 23:59 nếu là khung giờ cuối cùng).
+               * Tránh tuyệt đối việc hàng đợi đông hoặc sự cố mạng làm quá 60 phút dẫn tới bỏ lỡ khung giờ đăng.
                */
-              if (currentMinutes >= fixedTimeMinutes && currentMinutes < fixedTimeMinutes + 60) {
+              let slotEndMinutes = 1440;
+              if (i + 1 < sortedFixedTimes.length) {
+                const [nextH, nextM] = sortedFixedTimes[i + 1].split(':').map(Number);
+                slotEndMinutes = nextH * 60 + nextM - 5;
+              }
+
+              if (currentMinutes >= fixedTimeMinutes && currentMinutes < slotEndMinutes) {
                 /**
                  * Khung giờ này ĐÃ ĐƯỢC XUẤT BẢN hôm nay nếu có bài đăng sau thời điểm (fixedTimeMinutes - 5)
                  */
@@ -360,33 +371,61 @@ export class ZTTeamPublisherCron {
         return a.itemCreatedAt - b.itemCreatedAt;
       });
 
-      this.logger.log(`[ZTTeam Global Dispatcher] Có ${eligibleCandidates.length} bài sẵn sàng xuất bản. Đang điều phối bài ưu tiên cao nhất...`);
+      this.logger.log(`[ZTTeam Global Dispatcher] Có ${eligibleCandidates.length} bài sẵn sàng xuất bản. Đang điều phối theo tài khoản BM...`);
 
       /**
-       * ZTTeam: Kiểm tra và đảm bảo khoảng cách an toàn toàn cục (Global Rate Limiter):
-       * Tuyệt đối không gọi Facebook API nếu lần đăng gần nhất trên toàn hệ thống chưa đủ 45 giây.
+       * ZTTeam: Bộ điều phối thông minh song song theo BM (Multi-Account Parallel Dispatcher):
+       * Các Fanpage được phân bổ trên 3 tài khoản BM khác nhau với Token riêng biệt.
+       * Mỗi chu kỳ chọn tối đa 1 bài ưu tiên cho mỗi tài khoản BM (tối đa 3 bài đồng thời),
+       * với giãn cách bảo vệ tối thiểu 20 giây cho từng BM riêng biệt.
+       * Tăng tốc độ xuất bản lên gấp 3 lần, xử lý 100 page chỉ trong ~35-45 phút thay vì 3.5 tiếng!
        */
-      const elapsedSinceLastGlobal = Date.now() - this.ztteam_lastGlobalPublishTimestamp;
-      const MIN_GLOBAL_GAP_MS = 45000;
-      if (this.ztteam_lastGlobalPublishTimestamp > 0 && elapsedSinceLastGlobal < MIN_GLOBAL_GAP_MS) {
-        const waitMs = MIN_GLOBAL_GAP_MS - elapsedSinceLastGlobal;
-        this.logger.log(`[ZTTeam Global Dispatcher] Giãn cách bảo vệ Meta: Chờ thêm ${Math.round(waitMs / 1000)}s trước khi gọi Facebook API...`);
-        await new Promise(resolve => setTimeout(resolve, waitMs));
+      const selectedTargets: typeof eligibleCandidates = [];
+      const seenAccountIds = new Set<string>();
+
+      for (const candidate of eligibleCandidates) {
+        const accId = candidate.page.fb_account_id || 'default';
+        if (!seenAccountIds.has(accId)) {
+          const lastAccPublish = this.ztteam_lastAccountPublishMap.get(accId) || 0;
+          const elapsed = Date.now() - lastAccPublish;
+          const MIN_ACCOUNT_GAP_MS = 20000;
+
+          if (lastAccPublish === 0 || elapsed >= MIN_ACCOUNT_GAP_MS) {
+            seenAccountIds.add(accId);
+            selectedTargets.push(candidate);
+          }
+        }
       }
 
-      /** Lấy bài viết ưu tiên số 1 để đăng trong chu kỳ này */
-      const target = eligibleCandidates[0];
-      const { selectedItem, page } = target;
-
-      this.logger.log(`[ZTTeam Global Dispatcher] Đang xuất bản cho Page: ${page.name} (Đã chờ: ${target.diffMinutesFromLastPost === Infinity ? 'Mới/Vô cực' : target.diffMinutesFromLastPost + 'm'})`);
-
-      if (selectedItem.type === 'reel_legacy') {
-        await this.ztteam_publishReel(selectedItem.data, page);
-      } else if (selectedItem.type === 'image_only') {
-        await this.ztteam_publishImage(selectedItem.data, page, true);
-      } else {
-        await this.ztteam_publishImage(selectedItem.data, page, false);
+      if (selectedTargets.length === 0) {
+        this.logger.log(`[ZTTeam Multi-Account Dispatcher] Tất cả các BM Account đang trong thời gian giãn cách an toàn (< 20s). Chờ nhịp tiếp theo.`);
+        return;
       }
+
+      this.logger.log(`[ZTTeam Multi-Account Dispatcher] Có ${eligibleCandidates.length} bài sẵn sàng. Đang đồng thời xuất bản ${selectedTargets.length} bài cho ${selectedTargets.length} BM khác nhau...`);
+
+      await Promise.allSettled(
+        selectedTargets.map(async (target) => {
+          const { selectedItem, page } = target;
+          const accId = page.fb_account_id || 'default';
+          const accName = page.fb_account?.name || accId;
+          this.logger.log(`[ZTTeam Dispatcher] [BM: ${accName}] Đang xuất bản cho Page: ${page.name} (Đã chờ: ${target.diffMinutesFromLastPost === Infinity ? 'Mới/Vô cực' : target.diffMinutesFromLastPost + 'm'})`);
+
+          try {
+            if (selectedItem.type === 'reel_legacy') {
+              await this.ztteam_publishReel(selectedItem.data, page);
+            } else if (selectedItem.type === 'image_only') {
+              await this.ztteam_publishImage(selectedItem.data, page, true);
+            } else {
+              await this.ztteam_publishImage(selectedItem.data, page, false);
+            }
+          } catch (itemErr: any) {
+            this.logger.error(`[ZTTeam Dispatcher] Lỗi xuất bản cho Page ${page.name}: ${itemErr.message}`);
+          } finally {
+            this.ztteam_lastAccountPublishMap.set(accId, Date.now());
+          }
+        })
+      );
 
       this.ztteam_lastGlobalPublishTimestamp = Date.now();
     } catch (error: any) {
