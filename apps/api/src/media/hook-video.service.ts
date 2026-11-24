@@ -359,6 +359,31 @@ export class ZTTeamHookVideoService {
       ].filter(p => p && fs.existsSync(p));
 
       let sourceImagePath = localImageCandidates[0];
+      if (!sourceImagePath && imageRecord.wp_post_url) {
+        try {
+          const res = await axios.get(imageRecord.wp_post_url, {
+            timeout: 8000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+          });
+          const cheerio = require('cheerio');
+          const $ = cheerio.load(res.data);
+          const ogImg = $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content');
+          if (ogImg) {
+            const targetDir = ztteam_getImagesPath(imageId);
+            fs.mkdirSync(targetDir, { recursive: true });
+            const downloadedPath = path.join(targetDir, 'output.png');
+            const imgRes = await axios.get(ogImg, { responseType: 'arraybuffer', timeout: 10000 });
+            fs.writeFileSync(downloadedPath, Buffer.from(imgRes.data));
+            sourceImagePath = downloadedPath;
+            this.logger.log(`[HookVideo] Đã tự động tải ảnh gốc từ ${ogImg} cho bài ${imageId}`);
+          }
+        } catch (e: any) {
+          this.logger.warn(`Không thể tự động tải ảnh gốc từ ${imageRecord.wp_post_url}: ${e?.message || e}`);
+        }
+      }
+
       if (!sourceImagePath && engine !== 'text_story') {
         throw new Error('Không tìm thấy file ảnh gốc để render video');
       }

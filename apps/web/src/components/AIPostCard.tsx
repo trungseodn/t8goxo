@@ -335,7 +335,12 @@ export default function ZTTeamAIPostCard({
         <div className="w-full aspect-[4/5] bg-black/60 rounded-xl relative overflow-hidden group/media border border-white/5">
           {/** Badges Top Bar */}
           <div className="absolute top-2.5 left-2.5 right-2.5 z-20 flex items-center justify-between pointer-events-none gap-1">
-            {item.template_id === 'source_original' ? (
+            {item.video_url ? (
+              <div className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-emerald-600/90 backdrop-blur-md border border-emerald-400/40 text-[10px] font-bold text-white shadow-md shrink-0" title="Video Reel 10s đã được render hoàn chỉnh">
+                <span className="material-symbols-outlined text-[13px]">movie</span>
+                REEL SẴN SÀNG
+              </div>
+            ) : item.template_id === 'source_original' ? (
               <div className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/85 backdrop-blur-md border border-amber-400/40 text-[10px] font-bold text-white shadow-md shrink-0" title="Đang sử dụng ảnh gốc của bài viết nguồn">
                 <span className="material-symbols-outlined text-[13px]">image</span>
                 ẢNH GỐC
@@ -381,9 +386,9 @@ export default function ZTTeamAIPostCard({
                   title="Bấm để chuyển đổi giữa Ảnh và Video Reel"
                 >
                   <span className="material-symbols-outlined text-[12px]">
-                    {showVideo ? 'photo' : 'movie'}
+                    {showVideo ? 'photo' : 'play_arrow'}
                   </span>
-                  <span>{showVideo ? 'ẢNH' : 'VIDEO'}</span>
+                  <span>{showVideo ? 'XEM ẢNH' : 'PHÁT REEL'}</span>
                 </button>
 
                 <a
@@ -467,15 +472,17 @@ export default function ZTTeamAIPostCard({
             </div>
           ) : item.image_url ? (
             <div
-              className="w-full h-full cursor-pointer overflow-hidden relative"
+              className="w-full h-full cursor-pointer overflow-hidden relative group/zoom"
               onClick={() => {
-                if (onZoom) {
+                if (item.video_url) {
+                  setShowVideo(true);
+                } else if (onZoom) {
                   onZoom(item.image_url);
                 } else {
                   window.open(item.image_url, '_blank');
                 }
               }}
-              title="Click để xem ảnh phóng to"
+              title={item.video_url ? 'Bấm để phát Video Reel trực tiếp' : 'Click để xem ảnh phóng to'}
             >
               <img
                 src={item.image_url}
@@ -487,6 +494,19 @@ export default function ZTTeamAIPostCard({
                     'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 24 24" fill="none" stroke="%2364748b" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
                 }}
               />
+
+              {/** Nút Play Overlay hiển thị rõ ràng khi đã có Video Reel */}
+              {item.video_url && (
+                <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/25 group-hover/zoom:bg-black/40 transition-all">
+                  <div className="w-12 h-12 rounded-full bg-black/75 group-hover/zoom:scale-110 group-hover/zoom:bg-amber-500 border border-white/30 text-white flex items-center justify-center shadow-2xl transition-all">
+                    <span className="material-symbols-outlined text-3xl ml-0.5">play_arrow</span>
+                  </div>
+                  <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded bg-black/80 backdrop-blur-md border border-white/20 text-[10px] font-bold text-white flex items-center gap-1 shadow-md">
+                    <span className="material-symbols-outlined text-[13px] text-amber-400">videocam</span>
+                    0:10 REEL
+                  </div>
+                </div>
+              )}
               {/** ZTTeam: Nếu bị lỗi đăng Facebook nhưng ảnh đã có: Hiển thị banner cảnh báo dưới chân ảnh */}
               {isFailed && (
                 <div className="absolute inset-x-0 bottom-0 bg-red-950/90 backdrop-blur-sm p-2 text-red-200 text-[10px] flex items-center justify-between gap-1.5 shadow-md">
